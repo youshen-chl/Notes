@@ -1,0 +1,122 @@
+Makefile文件中的uImage生成规则分析：
+
+准备知识：
+1.Makefile中常用的自动化变量所代表的含义：
+
+	自动化变量$?代表依赖文件列表中被改变过的所有文件。
+	自动化变量$^代表所有通过目录搜索得到的依赖文件的完整路径名(目录 + 一般文件名)列表。
+	自动化变量$@代表规则的目标。
+	自动化变量$<代表规则中通过目录搜索得到的依赖文件列表的第一个依赖文件。
+	自动化变量$(@D) 代表$@ 目标文件 的目录部分 
+	The directory part of the file name of the target, 
+	with the trailing slash removed. If the value of ‘$@’ is dir/foo.o 
+	then ‘$(@D)’ is dir. This value is . if ‘$@’ does not contain a slash.
+	http://www.gnu.org/software/make/manual/make.html
+	自动化变量$(@F) 代表$@ 目标文件 的非目录部分
+	The file-within-directory part of the file name of 
+	the target. If the value of ‘$@’ is dir/foo.o then ‘$(@F)’ is foo.o. 
+	‘$(@F)’ is equivalent to ‘$(notdir $@)’.
+
+2. $(wildcard $^)中wildcard的含义为--使得表达式中的通配符有效：
+
+	在Makefile规则中，通配符会被自动展开。但在变量的定义和函数引用时，通配符将失效。
+	这种情况下如果需要通配符有效，就需要使用函数“wildcard”，它的用法是：$(wildcard PATTERN...) 。
+	在Makefile中，它被展开为已经存在的、使用空格分开的、匹配此模式的所有文件列表。
+	如果不存在任何符合此模式的文件，函数会忽略模式字符并返回空。
+	
+uImage生成规则：
+
+$(obj)/uImage: $(obj)/Image FORCE
+	@$(check_for_multiple_loadaddr)  //检查是否有多个loadaddr地址
+	$(call if_changed,uimage)
+	
+	
+$(call if_changed,uimage)分析：
+
+	//if_changed 在scripts/Kbuild.include文件中定义；
+	if_changed = $(if $(strip $(any-prereq) $(arg-check)),      //strip函数表示去掉 参数中的空格                 \
+		@set -e;     // 加@ 表示执行时，不打印                                                         \
+		$(echo-cmd) $(cmd_$(1));                                             \
+		echo 'cmd_$@ := $(make-cmd)' > $(dot-target).cmd)
+
+	
+	# Find any prerequisites that is newer than target or that does not exist.
+	# PHONY targets skipped in both cases.
+	any-prereq = $(filter-out $(PHONY),$?) $(filter-out $(PHONY) $(wildcard $^),$^)
+	//
+	在 any-prereq 中，首先使用 $(filter-out $(PHONY),$?) 将 $? 中的所有伪目标去掉，不然可能会将 FORCE 这种目标也带进来，
+	如果此时返回非空，那么说明有比目标还要新的依赖文件。$(wildcard $^) 匹配当前目录下的所有依赖文件(已经存在的)，
+	然后再使用 $(filter-out $(PHONY) $(wildcard $^),$^) 将伪目标以及当前目录下匹配的文件列表从整个 $^ 列表中删除，
+	如果返回不为空，那么说明某些依赖文件不存在，也就是说这些不存在的依赖文件还没生成 --这是因为某些依赖文件需要在编译时才会生成。
+		
+	# Check if both arguments has same arguments. Result is empty string if equal.
+	# User may override this check using make KBUILD_NOCMDDEP=1
+	arg-check = $(strip $(filter-out $(cmd_$(1)), $(cmd_$@)) \
+						$(filter-out $(cmd_$@),   $(cmd_$(1))) )
+	
+	在 arg-check 中，$(1) 表示第 1 个参数，比如上面的 $(call if_changed_rule,uimage) 中，
+	$(1) 就是 uimage ，所以 $(cmd_$(1) 就是表示 cmd_uimage。它实际上表示的是这一次编译文件时所用到的命令行参数。
+	//
+	在 arg-check 中，首先使用 $(filter-out $(cmd_$(1)), $(cmd_$@)) 将上一次的编译参数中过略掉本次要编译的参数，
+	再用 $(filter-out $(cmd_$@),   $(cmd_$(1))) 将本次的编译参数中过滤掉上一次的编译参数。正反过滤的原因是，
+	filter-out 函数在过滤时，如果第 2 个参数是第 1 个参数的子集或者是相同，那么返回空；所以，在第 1 次过滤时如果返回为空，
+	那么 cmd_$@ 可能是等于 cmd_$(1) 的，也可能是它的子集，所以只有当再次反过来做过滤时发现返回为空，
+	那么才能判断两次编译的参数是相等的，否则是不等的。如果返回结果不为空，说明编译参数发生了变化，那么就会执行后面的命令 。
+	
+	所以：
+	$(if $(strip $(any-prereq) $(arg-check))
+	//当发现规则的依赖有更新，或者是对应目标的命令行参数发生改变时($(strip $(any-prereq) $(arg-check)) 语句结果不为空)，
+	执行后面的语句
+	
+	
+	
+	@set -e; 表示如果命令执行有错那么命令停止执行并退出。
+
+	# echo command.
+	# Short version is used, if $(quiet) equals `quiet_', otherwise full one.
+	echo-cmd = $(if $($(quiet)cmd_$(1)),\
+			   echo '$(call escsq,$($(quiet)cmd_$(1)))$(echo-why)';)
+			   
+	cmd_uimage = $(CONFIG_SHELL) $(MKIMAGE) -A $(UIMAGE_ARCH) -O linux \
+				-C $(UIMAGE_COMPRESSION) $(UIMAGE_OPTS-y) \
+				-T $(UIMAGE_TYPE) \
+				-a $(UIMAGE_LOADADDR) -e $(UIMAGE_ENTRYADDR) \
+				-n $(UIMAGE_NAME) -d $(UIMAGE_IN) $(UIMAGE_OUT)
+	//在script目录的Makefile.lib  337行
+	$(echo-cmd) 用来打印出相关的编译命令，接着执行 $(cmd_uimage) 里的命令
+	
+	
+	最后 ：
+	echo 'cmd_$@ := $(make-cmd)' > $(dot-target).cmd 
+	将上面执行的命令写入一个叫 $(dot-target).cmd 的文件中，arch/arm64/boot/uImage.cmd该文件为隐藏文件
+	==> cmd_arch/arm64/boot/uImage := /bin/sh /root/linux-3.14.56-arm64/scripts/mkuboot.sh -A arm64 -O linux 
+									-C none  -T kernel -a 0x80080000 -e 0x80080000 -n 'Linux-3.14.56' 
+									-d arch/arm64/boot/Image arch/arm64/boot/uImage
+
+	
+附录： 变量的值  //顶层目录的Makefile里定义
+	# SHELL used by kbuild
+	CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
+		  else if [ -x /bin/bash ]; then echo /bin/bash; \
+		  else echo sh; fi ; fi)
+		  
+	MKIMAGE := $(srctree)/scripts/mkuboot.sh	  
+			
+	SRCARCH    := $(ARCH)
+	UIMAGE_ARCH ?= $(SRCARCH)
+	
+	UIMAGE_COMPRESSION ?= $(if $(2),$(2),none)
+	
+	UIMAGE_OPTS-y ?=
+	
+	UIMAGE_TYPE ?= kernel
+	
+	arch/arm64/boot/Makefile:19:
+	UIMAGE_LOADADDR=0x80080000	
+	UIMAGE_ENTRYADDR=0x80080000
+	
+	UIMAGE_NAME ?= 'Linux-$(KERNELRELEASE)'
+	
+	UIMAGE_IN ?= $<
+	
+	UIMAGE_OUT ?= $@

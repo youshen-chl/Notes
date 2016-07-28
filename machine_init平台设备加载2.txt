@@ -1,0 +1,290 @@
+Using sysfs
+~~~~~~~~~~~
+
+sysfs is always compiled in if CONFIG_SYSFS is defined. You can access
+it by doing:
+
+    mount -t sysfs sysfs /sys 
+    
+Directory Creation
+~~~~~~~~~~~~~~~~~~
+For every kobject that is registered with the system, a directory is
+created for it in sysfs. That directory is created as a subdirectory
+of the kobject's parent
+
+
+
+~~~~~~~~~~~~~~~~~~
+An attribute definition is simply:
+
+struct attribute {
+        char                    * name;
+        struct module		*owner;
+        umode_t                 mode;
+};
+
+
+int sysfs_create_file(struct kobject * kobj, const struct attribute * attr);
+void sysfs_remove_file(struct kobject * kobj, const struct attribute * attr);
+
+
+~~~~~~~~~~~~~~~~~~
+For example, the driver model defines struct device_attribute like:
+################################
+- devices (include/linux/device.h)
+----------------------------------
+
+struct device_attribute {
+	struct attribute	attr;
+	ssize_t (*show)(struct device *dev, struct device_attribute *attr,
+			char *buf);
+	ssize_t (*store)(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count);
+};
+
+int device_create_file(struct device *, const struct device_attribute *);
+属性文件添加函数
+void device_remove_file(struct device *, const struct device_attribute *);
+属性文件删除函数
+~~~~~~~~~~~~~~~~~~
+
+#define DEVICE_ATTR(_name, _mode, _show, _store) \
+struct device_attribute dev_attr_##_name = __ATTR(_name, _mode, _show, _store)
+
+For example, declaring
+
+static DEVICE_ATTR(foo, S_IWUSR | S_IRUGO, show_foo, store_foo);
+
+is equivalent to doing:
+
+static struct device_attribute dev_attr_foo = {
+	.attr = {
+		.name = "foo",
+		.mode = S_IWUSR | S_IRUGO,
+	},
+	.show = show_foo,
+	.store = store_foo,
+};
+
+
+
+################################
+
+- bus drivers (include/linux/device.h)
+--------------------------------------
+Structure:
+
+struct bus_attribute {
+        struct attribute        attr;
+        ssize_t (*show)(struct bus_type *, char * buf);
+        ssize_t (*store)(struct bus_type *, const char * buf, size_t count);
+};
+
+Declaring:
+
+BUS_ATTR(_name, _mode, _show, _store)
+
+Creation/Removal:
+
+int bus_create_file(struct bus_type *, struct bus_attribute *);
+void bus_remove_file(struct bus_type *, struct bus_attribute *);
+
+
+################################
+
+- device drivers (include/linux/device.h)
+-----------------------------------------
+
+Structure:
+
+struct driver_attribute {
+        struct attribute        attr;
+        ssize_t (*show)(struct device_driver *, char * buf);
+        ssize_t (*store)(struct device_driver *, const char * buf,
+                         size_t count);
+};
+
+Declaring:
+
+DRIVER_ATTR(_name, _mode, _show, _store)
+
+Creation/Removal:
+
+int driver_create_file(struct device_driver *, const struct driver_attribute *);
+void driver_remove_file(struct device_driver *, const struct driver_attribute *);
+
+
+
+
+
+
+######################################################################
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+smdk2440_machine_init（）是怎么储存的
+MACHINE_START 宏 用于定义和储存smdk2440_machine_init（）在.arch.info.init段里 
+
+
+machine_init最终调用platform_device_register（）
+
+smdk2440_machine_init
+	->platform_add_devices
+		->platform_device_register
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+MACHINE_START 宏 定义的machine_desc结构体对象 存在.arch.info.init段里 （vmlinux.lds.S）
+
+MACHINE_START(S3C2440, "SMDK2440")
+
+static const struct machine_desc __mach_desc_S3C2440	
+ __used	__attribute__((__section__(".arch.info.init"))) = {	
+	.nr		= MACH_TYPE_S3C2440,		
+	.name		= "SMDK2440",
+	
+	.atag_offset	= 0x100,
+	.init_irq	= s3c2440_init_irq,
+	.map_io		= smdk2440_map_io,
+	.init_machine	= smdk2440_machine_init,
+	.init_time	= samsung_timer_init,
+	.restart	= s3c244x_restart,
+};
+
+// vmlinux.lds.S
+	.init.arch.info : {
+		__arch_info_begin = .;
+		*(.arch.info.init)  //__mach_desc_S3C2440存在该段里
+		__arch_info_end = .;
+	}
+	
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+smdk2440_machine_init（）怎么被调用
+
+start_kernel
+	->setup_arch
+		->mdesc = setup_machine_tags(__atags_pointer, __machine_arch_type);
+			->for_each_machine_desc(p)
+					if (machine_nr == p->nr) 
+							mdesc = p; //找到与bootloader传递的machine_type相同的__mach_desc_S3C2440
+
+		->machine_desc = mdesc; //设置machine_desc全局变量
+
+
+//arch/arm/include/asm/mach/arch.h
+extern const struct machine_desc __arch_info_begin[], __arch_info_end[];
+#define for_each_machine_desc(p)			\
+	for (p = __arch_info_begin; p < __arch_info_end; p++)
+
+
+smdk2440_machine_init（）最终在arch/arm/kernel/setup.c被调用：
+customize_machine(void)
+	->if (machine_desc->init_machine)
+				->machine_desc->init_machine();
+				
+arch_initcall(customize_machine);
+在加载系统设备和驱动前调用customize_machine（）。
+
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%		
+######################################################################
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+driver_init如何初始化该体系
+
+
+start_kernel
+	->rest_init();
+		->kernel_thread(kernel_init, NULL, CLONE_FS | CLONE_SIGHAND);
+			->kernel_init()
+				->kernel_init_freeable();
+					->do_basic_setup();
+						->driver_init(); 
+						//初始化driver model体系
+							->devices_init(); 	//在/sysfs目录下建立devices目录（devices_kset）
+																	//和dev目录(dev_kobj)，在/sysfs/dev下建立block（sysfs_dev_block_kobj）
+																	//和char目录(sysfs_dev_char_kobj )
+																	
+							--buses_init();			//在/sysfs目录下建立bus目录（bus_kset）、在/sysfs/devices/目录下建立system目录
+							--classes_init();		//在/sysfs目录下建立class目录
+							--firmware_init() 	//在/sysfs目录下建立firmware目录
+							--platform_bus_init() //在devices_kset、bus_kset下注册总线设备、注册总线。
+							--cpu_dev_init()		// 在/sysfs/devices/system/目录(system_kset)之下创建cpu_kset，并且创建 cpu的属性文件
+						->do_initcalls();  
+						//查找initcall_levels中定义的所有段内的的所有函数，
+						//并do_one_initcall()来执行该函数。 即module_init()指定的函数
+							->do_initcalls()
+								->do_one_initcall(*fn)
+
+
+static initcall_t *initcall_levels[] __initdata = {
+	__initcall0_start,
+	__initcall1_start,
+	__initcall2_start,
+	__initcall3_start,
+	__initcall4_start,
+	__initcall5_start,
+	__initcall6_start,
+	__initcall7_start,
+	__initcall_end,
+};
+
+
+
+
+
+######################################################################
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+经常提到的platform总线上的驱动，通常是与 Linux本身有着密切关系，是系统正常工作必须的设备驱动。
+
+也有一些设备， 它们与内核的功能联系并不紧密， 更多的是为了服务于应用程序。应用程序使用这些设备时，
+就像对待一个文件那样进行操作。为此，linux 中提供了几种便于使用的驱动模型。
+
+
+###########################
+字符设备驱动程序
+	字符设备注册时，通常动态的申请设备号：
+	int alloc_chrdev_region(dev_t *dev, unsigned baseminor, unsigned count, const char *name) //返回设备号
+
+	字符设备的注册：（注册分为两步，初始化和添加设备）
+	void cdev_init(struct cdev *cdev, const struct file_operations *fops) 
+	//cdev_init主要把输入的file_operations 传递给字符设备结构
+	int cdev_add(struct cdev *p, dev_t dev, unsigned count) 
+	
+	上面两个的功能相当于：
+	void cdev_init(struct cdev *cdev, const struct file_operations *fops)
+
+###########################
+块设备驱动程序
+	块设备注册：
+	int register_blkdev(unsigned int major, const char *name) 
+	//这个函数仅是将设备名name与指定的major相关联
+
+1.请求队列，在驱动中用request_queue结构体
+2.维持一个I/O请求在上层文件系统与底层物理磁盘之间的关系,通常用一个bio结构体来对应一个I/O请求
+3.块设备驱动又是怎样对底层物理磁盘进行访问的呢？gendisk数据结构体,在gendisk 中有一个类似字符
+设备中file_operations 的硬件操作结构指针，它就是block_device_operations 结构体
+
+request_queue结构体
+bio结构体
+gendisk结构体 --(block_device_operations)
+
+
+
+struct brd_device {
+	int		brd_number;
+	int		brd_refcnt;
+	loff_t		brd_offset;
+	loff_t		brd_sizelimit;
+	unsigned	brd_blocksize;
+
+	struct request_queue	*brd_queue;
+	struct gendisk		*brd_disk;
+	struct list_head	brd_list;
+	spinlock_t		brd_lock;
+	struct radix_tree_root	brd_pages;
+};
+
+

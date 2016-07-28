@@ -1,0 +1,136 @@
+1.Selection of Processor Architecture and Board Type:
+	just type "make <board_name>_defconfig".
+	
+	Example: For a TQM823L module type:
+
+	cd u-boot
+	make TQM823L_defconfig
+	
+#############################################	
+179：定义KBUILD_EXTMOD变量
+# Use make M=dir to specify directory of external module to build
+# Old syntax make ... SUBDIRS=$PWD is still supported
+# Setting the environment variable KBUILD_EXTMOD take precedence
+ifdef SUBDIRS
+  KBUILD_EXTMOD ?= $(SUBDIRS)
+endif
+
+ifeq ("$(origin M)", "command line")
+  KBUILD_EXTMOD := $(M)
+endif
+/****************************
+origin函数的作用是告诉你变量是哪里来的，其出生状况如何，他并不改变变量。其语法是：$(origin <variable>)
+
+5. 如果变量来自命令行，那么返回 "command line" 。如下面的 Makefile 代码：
+
+all:
+    @echo $(origin MyVar)
+
+
+运行方法：
+
+$ make MyVar="Are you ok?"
+command line
+****************************/
+
+KBUILD_EXTMOD变量为 空
+#############################################	
+435：定义config-targets
+ifeq ($(KBUILD_EXTMOD),)
+        ifneq ($(filter config %config,$(MAKECMDGOALS)),)  //filter过滤得到tq2440_defconfig
+                config-targets := 1
+                ifneq ($(words $(MAKECMDGOALS)),1)  //words函数统计 字符串中单词个数 ： 1
+                        mixed-targets := 1
+                endif
+        endif
+endif
+
+
+//makefile的环境变量“MAKECMDGOALS”，这个变量中会存放你所指定的终极目标的列表: 该处为tq2440_defconfig
+
+/********************************************
+filter函数 ： $(filter <pattern...>,<text> )
+名称：过滤函数——filter。
+功能：以<pattern>模式过滤<text>字符串中的单词，保留符合模式<pattern>的单词。可以有多个模式。
+返回：返回符合模式<pattern>的字串。
+示例：
+sources := foo.c bar.c baz.s ugh.h
+foo: $(sources)
+cc $(filter %.c %.s,$(sources)) -o foo
+
+$(filter %.c %.s,$(sources))返回的值是“foo.c bar.c baz.s”
+******************************************/
+
+config-targets := 1 
+#############################################
+461：
+ifeq ($(config-targets),1)
+# ===========================================================================
+# *config targets only - make sure prerequisites are updated, and descend
+# in scripts/kconfig to make the *config target
+
+KBUILD_DEFCONFIG := sandbox_defconfig
+export KBUILD_DEFCONFIG KBUILD_KCONFIG
+
+config: scripts_basic outputmakefile FORCE
+	$(Q)$(MAKE) $(build)=scripts/kconfig $@
+
+%config: scripts_basic outputmakefile FORCE    //匹配到tq2440_defconfig  执行这句
+	$(Q)$(MAKE) $(build)=scripts/kconfig $@	   // @make -f ./scripts/Makefile.build obj=scripts/kconfig tq2440_defconfig
+
+	
+NOTE: make menuconfig后，经过一些逻辑判断（就是前面ifeq ($(config-targets),1)之类的），最终来执行%config目标的规则，%config目标的规则中有两条命令，第一条创建两个目录，第二条执行make命令，Q的值被定义为@或者为空，而@……的意思是不将此行规则在执行时显示在屏幕上，因此$(Q)无关紧要。MAKE是内嵌变量，其值为make，$@表示当前目标，即menuconfig，故第二条规则实际就是make -f scripts/Makefile.build obj=scripts/kconfig menuconfig，进入到scripts/makefile.build文件中，make的目标是menuconfg。menuconfg目标有三个依赖scripts_basic outputmakefile FORCE 。scripts_basic目标的规则的命令为$(Q)$(MAKE) $(build)=scripts/basic，展开即make -f scripts/Makefile.build obj=scripts/basic。查看Makefile.build文件，可以看到，该文件的默认目标是__build，__build目标有两条规则，第一条是空规则，第二条规则有命令。按照makefile规则，当一个目标有多条规则时，只能有一条规则有生成目标的命令，多条规则的中的命令和依赖在makefile文件被读取时合并，因此说，这里__build目标的实质性规则是
+
+./scripts/Makefile.build:	
+__build: $(if $(KBUILD_BUILTIN),$(builtin-target) $(lib-target) $(extra-y)) \ 
+     $(if $(KBUILD_MODULES),$(obj-m) $(modorder-target)) \ 
+     $(subdir-ym) $(always) 
+    @:
+
+KBUILD_BUILTIN、KBUILD_MODULES在顶层makefile文件中定义，并通过export关键字定义，使在makefile递归进行时，这两个变量被传递进子makefile。KBUILD_BUILTIN和KBUILD_MODULES在顶层makefile文件中定义赋为1后，就没有被改变过。所以此处__build目标的依赖就是$(builtin-target) $(lib-target) $(extra-y) $(subdir-ym) $(always)。命令“:”在bash中表示什么都不干，只是单纯的返回true. 经过分析，发现builtin-target、lib-target、extra-y、subdir-ym都为空串，只有always有值，always在scripts/kconfig/Makefile中定义为dochecklxdialog，而dochecklxdialog目标所在规则的注释写着# Check that we have the required ncurses stuff installed for lxdialog (menuconfig)，也就是说，__build目标的依赖dochecklxdialog是用来检查生成配置对话框所需的ncurses库是不是已经安装在本机了，如果没有安装，make过程会报错退出。因此在make menuconfig前，我们要保证该库已经被安装在本地。
+
+outputmakefile 目标所在规则实际上什么也不做。FORCE所在规则为空，也是什么都不做。FORCE被定义为一个伪目标，所以它作为依赖时总是被认为是最新的（比目标新），故有FORCE作为依赖的目标每次make时必然会重新生成，在这里FORCE伪目标的规则命令为空，故FORCE在Kbuild体系中，就是相当于是一个关键字，如果我们想要某个目标每次make的时候都一定会被重新生成，就把FORCE写为该目标的依赖。 	
+	
+	
+	
+#########
+391：	
+	PHONY += scripts_basic
+scripts_basic:
+	$(Q)$(MAKE) $(build)=scripts/basic   // @make -f ./scripts/Makefile.build obj=scripts/basic
+	$(Q)rm -f .tmp_quiet_recordmcount
+	
+outputmakefile:
+ifneq ($(KBUILD_SRC),)  //KBUILD_SRC为空
+	$(Q)ln -fsn $(srctree) source
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/mkmakefile \
+	    $(srctree) $(objtree) $(VERSION) $(PATCHLEVEL)
+endif
+	
+几个变量：
+$(Q) = @  
+$(CONFIG_SHELL) = /bin/sh
+$(MAKE) = make
+$@ = %config
+$(srctree) = .
+
+$(build)的定义在：scripts/Kbuild.include
+	build := -f $(srctree)/scripts/Makefile.build obj	
+	
+
+
+*************************************	
+@make -f ./scripts/Makefile.build obj=scripts/kconfig tq2440_defconfig	
+	
+NOTE: 由make -f scripts/Makefile.build obj=scripts/kconfig menuconfig可知，src值为scripts/kconfig，与/%的字串模式相符，因此$(filter /%,$(src))就是scripts/kconfig，故kbuild-dir就被赋值为$(src)，即kbuild-dir为scripts/kconfig。由于scripts/kconfig目录下并没有Kbuild文件，因此函数$(wildcard $(kbuild-dir)/Kbuild)查找失败，返回为空，从而kbuild-file值被赋为$(kbuild-dir)/Makefile，也即scripts/kconfig/Makefile。接着include $(kbuild-file)，目标menuconfig就被找到了。menuconfig目标的规则的命令是$< $(Kconfig)，展开为$(obj)/mconf $(Kconfig), obj的值为scripts/kconfig，因为没有定义KBUILD_KCONFIG，而且SRCARCH之前已被赋值为$(ARCH)，即SRCARCH为arm，因此Kconfig的值为arch/arm/Kconfig。故menuconfig目标的规则的命令为scripts/kconfig/mconf arch/arm/Kconfig。mconf在这里实际上是scripts/kconfig目录下的一个可执行文件，此条命令里arch/arm/Kconfig字符串作为命令行参数传入该可执行文件运行，该可执行文件实际上就是依据arch/arm/Kconfig文件提供的菜单配置，生成配置界面。NOTE: 这里为什么说scripts/kconfig/mconf就是一个可执行文件呢？继续往下看scripts/kconfig/Makefile中的内容：
+
+./scripts/kconfig/Makefile
+110:
+%_defconfig: $(obj)/conf
+	$(Q)$< $(silent) --defconfig=arch/$(SRCARCH)/configs/$@ $(Kconfig)
+变量:silent := -s    SRCARCH := ..	
+%_defconfig: /scripts/kconfig/conf
+--> @/scripts/kconfig/conf --defconfig=arch/../configs/tq2440_defconfig Kconfig
+根据tq2440_defconfig文件对顶层目录下的.config文件等等进行配置。该过程会根据tq2440_defconfig里面的信息
+找到对应文件夹下面的Kconfig来进行相应的配置，比如对应arm板的Kconfig在arch/arm/Kconfig，里面会有各种板级Kconfig文件
+的指定，例如里面有source “board/samsung/smdk2440/Kconfig”一项，然后根据此项信息找到smdk2410的Kconfig进行信息配置

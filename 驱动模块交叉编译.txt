@@ -1,0 +1,16 @@
+#linux驱动模块交叉编译脚本：
+
+#1.开发板所用内核必须编译过，且不能加O=./out_XXXXX ，使得编译出的文件导入out_XXXX目录中，必须在源码目录编译。
+
+#KVER = /usr/src/linux
+#KVER = /lib/modules/`uname -r`/build
+KVER = /home/chl/workspace/linux-3.16   //(开发板的内核编译所在目录)
+CURDIR = $(shell pwd)
+# Kernel modules
+obj-m := pl2303.o
+
+build: kernel_modules
+kernel_modules:
+	$(MAKE) -C ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- $(KVER) M=$(CURDIR) modules
+clean:
+	$(MAKE) -C $(KVER) M=$(CURDIR) clean
